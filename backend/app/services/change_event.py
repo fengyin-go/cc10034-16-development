@@ -11,6 +11,20 @@ from typing import Any
 
 from app.services.base import BaseModuleService
 from app.pipeline import pipeline_bus
+from app.store import store
+
+
+def _parse_image(raw: Any) -> dict[str, Any]:
+    """把变更镜像统一解析成字典，无法解析时按空镜像处理。"""
+    if isinstance(raw, dict):
+        return dict(raw)
+    if not isinstance(raw, str) or not raw.strip():
+        return {}
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return dict(value) if isinstance(value, dict) else {}
 
 
 class ChangeEventService(BaseModuleService):
@@ -105,6 +119,40 @@ class ChangeEventService(BaseModuleService):
                 changed.append(delta_val)
         return {"delta_fields": changed, "delta_count": len(changed)}
 
+    def transaction_members(self, tx_id: str) -> list[dict[str, Any]]:
+        """按事务ID取出同一事务内的全部变更成员及其前后镜像。
+
+        审计轨迹据此生成脱敏复核样本集：每个成员带 member_id、来源表、
+        操作类型和实际发生变化的字段；无镜像或字段未变化的占位记录会被跳过。
+        """
+        members: list[dict[str, Any]] = []
+        for row in store.rows(self.MODULE):
+            if str(row.get("事务ID") or "").strip() != str(tx_id).strip():
+                continue
+            before = _parse_image(row.get("变更前镜像"))
+            after = _parse_image(row.get("变更后镜像"))
+            if not before and not after:
+                continue
+            changed = [
+                field for field in sorted(set(before) | set(after), key=str)
+                if before.get(field) != after.get(field)
+            ]
+            if not changed:
+                continue
+            event_id = str(row.get("事件ID") or f"{self.MODULE}:{row.get('id', '')}")
+            members.append({
+                "member_id": event_id,
+                "event_id": event_id,
+                "source_row_id": row.get("id"),
+                "table": str(row.get("来源表") or ""),
+                "operation": str(row.get("操作类型") or ""),
+                "event_time": str(row.get("事件时间") or ""),
+                "before": before,
+                "after": after,
+                "changed_fields": changed,
+            })
+        return members
+
     def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
         entry, msg = super().run_action(entry_id, action)
         if entry and action == "下发事件":
@@ -114,3 +162,5 @@ class ChangeEventService(BaseModuleService):
                 "change_event", "已下发"
             )
         return entry, msg
+
+change_event_service = ChangeEventService()

@@ -11,13 +11,16 @@
 .
 ├── frontend/                 Vue 3 + Vite + TypeScript 前端
 │   ├── src/views/WorkbenchView.vue|tsx  全部模块共享工作台
+│   ├── src/views/AuditReviewView.vue    审计复核台（脱敏样本/补证回放）
 │   ├── src/data/modules.ts              18个业务模块配置
 │   ├── src/api/              统一请求封装
 │   └── vite.config.ts        dev server 配置（open: false）
 ├── backend/                  FastAPI（Python） 后端
-│   ├── app/routers/resource.py  通用查询/导出/登记/动作接口
-│   ├── app/services/<key>.py    每个模块独立领域逻辑
-│   ├── app/services/base.py     共享服务骨架
+│   ├── app/routers/resource.py      通用查询/导出/登记/动作接口
+│   ├── app/routers/audit_review.py  审计复核样本接口
+│   ├── app/services/<key>.py        每个模块独立领域逻辑
+│   ├── app/services/audit_review.py 事务镜像脱敏、字段确认与整笔证明
+│   ├── app/services/base.py         共享服务骨架
 │   └── app/store.py          内存数据仓库与示例数据
 ├── .gitignore
 └── docker-compose.yml
@@ -45,6 +48,22 @@ npm run dev
 
 前端默认监听 `http://127.0.0.1:5173/`，dev server 不会自动打开浏览器，
 需要自己访问。`/api` 由 vite 代理到后端 `http://127.0.0.1:8000`。
+
+## 审计复核样本（字段级变更证据）
+
+审计轨迹原本只有操作摘要，无法给出可分享的字段级变更证据。复核台把 `change_event`
+中同一事务的变更前后镜像，按查阅权限转换成脱敏复核样本集：
+
+- `POST /api/audit-review/transactions/{tx_id}/samples?account_id=...`：生成样本，越权字段只计数量、不返回值。
+- `GET  /api/audit-review/samples/{sample_id}?account_id=...`：回查旧样本，按当前授权重新脱敏。
+- `POST /api/audit-review/samples/{sample_id}/confirmations`：基于样本生成按字段划分的确认记录。
+- `POST /api/audit-review/transactions/{tx_id}/replay?account_id=...`：补证回放，挑出仍需补证的成员。
+- `POST /api/audit-review/transactions/{tx_id}/attest?account_id=...`：整笔证明，成员或字段未全部复核时拒绝。
+- `POST /api/audit-review/accounts/{account_id}/revoke|grants`：收回/授予字段查阅权限。
+
+示例账号 `order_status_reader` 对 `sales.orders` 只读且仅能看 `status`；
+样例事务 `tx-2026-11-20-0001` 同时改动了订单金额和归属其他团队的客户信用等级、手机号。
+收回授权后旧样本会重新脱敏，历史确认也不再计入已确认范围。
 
 ## 业务模块
 
